@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import os
+import io
+import zipfile
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 
@@ -11,15 +13,31 @@ st.markdown("""
     <style>
     .stApp { background-color: #ffffff; color: #333333; }
     .stButton>button { width: 100%; border-radius: 10px; font-weight: bold; margin-bottom: 5px; }
-    .stDownloadButton>button { width: 100%; border-radius: 10px; font-weight: bold; background-color: #e3f2fd; color: #1565c0; border: 1px solid #bbdefb; }
+    /* 全系統備份按鈕專屬樣式：深藍色背景，白字 */
+    .stDownloadButton>button { 
+        width: 100%; 
+        border-radius: 10px; 
+        font-weight: bold; 
+        background-color: #0d47a1; 
+        color: white; 
+        border: 2px solid #0d47a1;
+        padding: 10px;
+    }
+    .stDownloadButton>button:hover {
+        background-color: #1565c0;
+        color: white;
+    }
     .anniversary-text { font-size: 1.1rem; color: #e91e63; font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
-DB_TODO = "notes_todo.csv"
-DB_ANNIV = "notes_anniversary.csv"
+# 定義資料庫檔案名稱
+DB_FILES = {
+    "notes_todo.csv": "待辦事項紀錄",
+    "notes_anniversary.csv": "紀念日紀錄"
+}
 
-# 設定萬年曆極限範圍 (1900年 - 2100年)
+# 設定萬年曆極限範圍
 MIN_DATE = date(1900, 1, 1)
 MAX_DATE = date(2100, 12, 31)
 
@@ -44,25 +62,39 @@ def load_data(filename, columns):
         return pd.read_csv(filename)
     return pd.DataFrame(columns=columns)
 
-# --- 4. 側邊欄：管理與日子計算 ---
+# 打包 ZIP 函數
+def create_zip_backup():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "a", zipfile.ZIP_DEFLATED, False) as zf:
+        for file in DB_FILES.keys():
+            if os.path.exists(file):
+                zf.write(file)
+    return buf.getvalue()
+
+# --- 4. 側邊欄：一鍵全系統備份中心 ---
 with st.sidebar:
     st.title("🛠️ 系統控制台")
     
-    # 備份按鈕
-    st.subheader("📥 資料備份 (CSV)")
-    for db_file, label in [(DB_TODO, "待辦事項備份"), (DB_ANNIV, "紀念日備份")]:
-        if os.path.exists(db_file):
-            with open(db_file, "rb") as f:
-                st.download_button(
-                    label=f"下載 {label}",
-                    data=f,
-                    file_name=f"{db_file.split('.')[0]}_{date.today()}.csv",
-                    mime="text/csv"
-                )
+    st.subheader("📥 全系統備份中心")
+    st.caption("一鍵打包所有個人紀錄")
     
+    # 檢查是否有任何資料檔案存在
+    existing_files = [f for f in DB_FILES.keys() if os.path.exists(f)]
+    
+    if existing_files:
+        zip_data = create_zip_backup()
+        st.download_button(
+            label="🚀 一鍵下載全部資料 (ZIP)",
+            data=zip_data,
+            file_name=f"full_system_backup_{date.today()}.zip",
+            mime="application/zip"
+        )
+    else:
+        st.warning("目前尚無可備份的資料")
+
     st.divider()
     
-    # 日子計算器 (加入萬年曆範圍)
+    # 日子計算器
     st.subheader("📅 日子計算器")
     sd = st.date_input("開始日期", date.today(), min_value=MIN_DATE, max_value=MAX_DATE, key="calc_start")
     ed = st.date_input("結束日期", date.today(), min_value=MIN_DATE, max_value=MAX_DATE, key="calc_end")
@@ -83,18 +115,17 @@ with tab1:
     with st.form("todo_form", clear_on_submit=True):
         col1, col2 = st.columns([2, 1])
         task = col1.text_input("要做什麼事？")
-        # 這裡加入了萬年曆範圍限制
         task_date = col2.date_input("選擇日期", date.today(), min_value=MIN_DATE, max_value=MAX_DATE)
         task_time = st.text_input("預定時間")
         if st.form_submit_button("加入清單"):
             if task:
                 new_todo = pd.DataFrame([{"日期": task_date, "時間": task_time, "內容": task, "狀態": "未完成"}])
-                todos = load_data(DB_TODO, ["日期", "時間", "內容", "狀態"])
-                pd.concat([todos, new_todo], ignore_index=True).to_csv(DB_TODO, index=False)
+                todos = load_data("notes_todo.csv", ["日期", "時間", "內容", "狀態"])
+                pd.concat([todos, new_todo], ignore_index=True).to_csv("notes_todo.csv", index=False)
                 st.rerun()
 
     st.divider()
-    todos = load_data(DB_TODO, ["日期", "時間", "內容", "狀態"])
+    todos = load_data("notes_todo.csv", ["日期", "時間", "內容", "狀態"])
     if not todos.empty:
         for idx, row in todos.iloc[::-1].iterrows():
             status_emoji = "✅" if row['狀態'] == "已完成" else "⏳"
@@ -103,29 +134,28 @@ with tab1:
                 c1, c2, c3 = st.columns(3)
                 if c1.button("🆗 完成", key=f"done_{idx}"):
                     todos.at[idx, '狀態'] = "已完成"
-                    save_data(todos, DB_TODO); st.rerun()
-                if c2.button("💾 儲存", key=f"save_{idx}"):
+                    save_data(todos, "notes_todo.csv"); st.rerun()
+                if c2.button("💾 儲存修改", key=f"save_{idx}"):
                     todos.at[idx, '內容'] = new_content
-                    save_data(todos, DB_TODO); st.rerun()
-                if c3.button("🗑️ 刪除", key=f"del_todo_{idx}"):
-                    todos.drop(idx).to_csv(DB_TODO, index=False); st.rerun()
+                    save_data(todos, "notes_todo.csv"); st.rerun()
+                if c3.button("🗑️ 刪除事項", key=f"del_todo_{idx}"):
+                    todos.drop(idx).to_csv("notes_todo.csv", index=False); st.rerun()
 
 with tab2:
     st.subheader("🌹 紀錄重要紀念日")
     with st.form("anniv_form", clear_on_submit=True):
         col_a, col_b = st.columns(2)
         a_name = col_a.text_input("紀念日名稱")
-        # 這裡加入了萬年曆範圍限制，讓你選幾十年前也沒問題
         a_date = col_b.date_input("起始日期", date.today(), min_value=MIN_DATE, max_value=MAX_DATE)
         if st.form_submit_button("新增紀念日"):
             if a_name:
                 new_a = pd.DataFrame([{"名稱": a_name, "日期": a_date}])
-                annivs = load_data(DB_ANNIV, ["名稱", "日期"])
-                pd.concat([annivs, new_a], ignore_index=True).to_csv(DB_ANNIV, index=False)
+                annivs = load_data("notes_anniversary.csv", ["名稱", "日期"])
+                pd.concat([annivs, new_a], ignore_index=True).to_csv("notes_anniversary.csv", index=False)
                 st.rerun()
 
     st.divider()
-    annivs = load_data(DB_ANNIV, ["名稱", "日期"])
+    annivs = load_data("notes_anniversary.csv", ["名稱", "日期"])
     if not annivs.empty:
         for idx, row in annivs.iterrows():
             start_d = datetime.strptime(str(row['日期']), "%Y-%m-%d").date()
@@ -139,6 +169,6 @@ with tab2:
                 m1.metric("已過年數", f"{rd.years} 年")
                 m2.metric("已過月數", f"{(rd.years * 12) + rd.months} 個月")
                 m3.metric("已過總天數", f"{diff_days:,} 天")
-                if st.button(f"🗑️ 移除紀錄", key=f"del_anniv_{idx}"):
-                    annivs.drop(idx).to_csv(DB_ANNIV, index=False); st.rerun()
+                if st.button(f"🗑️ 移除此紀念日", key=f"del_anniv_{idx}"):
+                    annivs.drop(idx).to_csv("notes_anniversary.csv", index=False); st.rerun()
                 st.divider()
